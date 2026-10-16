@@ -147,7 +147,7 @@ jobs:
               > SHA256SUMS
           )
 
-      - name: Pack REA prefix for transfer
+      - name: Pack REA prefix and split Ghidra for transfer
         shell: bash
         run: |
           set -euo pipefail
@@ -155,13 +155,51 @@ jobs:
           tar --zstd -cf "$BUNDLE/rea-prefix-linux-x64.tar.zst" -C "$BUNDLE" rea
           rm -rf "$BUNDLE/rea"
           (cd "$BUNDLE" && sha256sum rea-prefix-linux-x64.tar.zst >> SHA256SUMS)
+
+          split -b 190000000 -d -a 2 \
+            "$BUNDLE/$GHIDRA_ZIP" "$BUNDLE/ghidra.part-"
+          test -s "$BUNDLE/ghidra.part-00"
+          test -s "$BUNDLE/ghidra.part-01"
+          test -s "$BUNDLE/ghidra.part-02"
+          test ! -e "$BUNDLE/ghidra.part-03"
+          (cd "$BUNDLE" && sha256sum ghidra.part-00 ghidra.part-01 ghidra.part-02 > GHIDRA_PARTS_SHA256)
+          rm "$BUNDLE/$GHIDRA_ZIP"
           ls -lh "$BUNDLE" "$BUNDLE/evidence"
 
-      - name: Upload verified offline bundle
+      - name: Upload M0 core bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: gow3-m0-offline-tools-linux-x64
-          path: ${{ runner.temp }}/m0-bundle/
+          name: gow3-m0-core-linux-x64
+          path: |
+            ${{ runner.temp }}/m0-bundle/evidence/
+            ${{ runner.temp }}/m0-bundle/provenance.txt
+            ${{ runner.temp }}/m0-bundle/SHA256SUMS
+            ${{ runner.temp }}/m0-bundle/GHIDRA_PARTS_SHA256
+            ${{ runner.temp }}/m0-bundle/rea-prefix-linux-x64.tar.zst
           include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Ghidra part 00
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gow3-m0-ghidra-part-00
+          path: ${{ runner.temp }}/m0-bundle/ghidra.part-00
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Ghidra part 01
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gow3-m0-ghidra-part-01
+          path: ${{ runner.temp }}/m0-bundle/ghidra.part-01
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Ghidra part 02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gow3-m0-ghidra-part-02
+          path: ${{ runner.temp }}/m0-bundle/ghidra.part-02
           if-no-files-found: error
           retention-days: 7
