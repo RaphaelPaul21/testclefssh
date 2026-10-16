@@ -1,0 +1,149 @@
+name: Build M0 offline tools
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-m0-offline-tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REA_TAG: rea-agents-6.5.0
+      REA_VERSION: 6.5.0
+      REA_SOURCE_SHA: 3b79af28e80785afce9f5998d8f03289402a1847
+      GHIDRA_VERSION: 12.1.4
+      GHIDRA_ZIP: ghidra_12.1.4_PUBLIC_20260921.zip
+      GHIDRA_SHA256: ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db
+      GHIDRA_URL: https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip
+
+    steps:
+      - name: Checkout bootstrap project
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Install Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.18.0'
+
+      - name: Install host prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y openjdk-21-jdk unzip zstd
+          node --version
+          npm install --global npm@11.16.0
+          npm --version
+          java -version
+          javac -version
+
+      - name: Build exact REA release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/m0-build" "$RUNNER_TEMP/m0-downloads"
+          git clone --filter=blob:none --branch "$REA_TAG" --depth 1 \
+            https://github.com/morluto/rea.git "$RUNNER_TEMP/m0-build/rea-src"
+          cd "$RUNNER_TEMP/m0-build/rea-src"
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$REA_SOURCE_SHA"
+          npm ci
+          npm run build:cached
+          npm pack --pack-destination "$RUNNER_TEMP/m0-downloads"
+          test -s "$RUNNER_TEMP/m0-downloads/rea-agents-${REA_VERSION}.tgz"
+          sha256sum "$RUNNER_TEMP/m0-downloads/rea-agents-${REA_VERSION}.tgz" \
+            | tee "$RUNNER_TEMP/m0-downloads/rea-package.sha256"
+
+      - name: Install REA with production dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/m0-bundle"
+          mkdir -p "$BUNDLE/rea" "$BUNDLE/evidence"
+          npm install --global --prefix "$BUNDLE/rea" \
+            "$RUNNER_TEMP/m0-downloads/rea-agents-${REA_VERSION}.tgz" \
+            --omit=dev --omit=optional
+          export PATH="$BUNDLE/rea/bin:$PATH"
+          test "$(node -p "require('$BUNDLE/rea/lib/node_modules/rea-agents/package.json').version")" = "$REA_VERSION"
+          command -v rea
+          rea --help > "$BUNDLE/evidence/rea-help.txt"
+          rea --version 2>&1 | tee "$BUNDLE/evidence/rea-version.txt" || true
+          cp "$RUNNER_TEMP/m0-downloads/rea-package.sha256" "$BUNDLE/evidence/rea-package.sha256"
+
+      - name: Download and verify official Ghidra
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/m0-bundle"
+          curl --fail --location --retry 4 --retry-all-errors \
+            --output "$BUNDLE/$GHIDRA_ZIP" "$GHIDRA_URL"
+          printf '%s  %s\n' "$GHIDRA_SHA256" "$BUNDLE/$GHIDRA_ZIP" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/m0-ghidra"
+          unzip -q "$BUNDLE/$GHIDRA_ZIP" -d "$RUNNER_TEMP/m0-ghidra"
+          test -x "$RUNNER_TEMP/m0-ghidra/ghidra_12.1.4_PUBLIC/support/analyzeHeadless"
+
+      - name: Run M0 environment diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/m0-bundle"
+          export PATH="$BUNDLE/rea/bin:$PATH"
+          export GHIDRA_INSTALL_DIR="$RUNNER_TEMP/m0-ghidra/ghidra_12.1.4_PUBLIC"
+          export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+
+          node --version | tee "$BUNDLE/evidence/node-version.txt"
+          npm --version | tee "$BUNDLE/evidence/npm-version.txt"
+          java -version 2>&1 | tee "$BUNDLE/evidence/java-version.txt"
+          printf 'GHIDRA_INSTALL_DIR=%s\n' "$GHIDRA_INSTALL_DIR" | tee "$BUNDLE/evidence/ghidra-path.txt"
+
+          rea providers --json | tee "$BUNDLE/evidence/rea-providers.json"
+          rea capabilities --json | tee "$BUNDLE/evidence/rea-capabilities.json"
+          rea doctor --json | tee "$BUNDLE/evidence/rea-doctor.json"
+          rea doctor --provider ghidra --json | tee "$BUNDLE/evidence/rea-doctor-ghidra.json"
+
+          cat > "$BUNDLE/provenance.txt" <<EOF
+          REA_VERSION=$REA_VERSION
+          REA_TAG=$REA_TAG
+          REA_SOURCE_SHA=$REA_SOURCE_SHA
+          GHIDRA_VERSION=$GHIDRA_VERSION
+          GHIDRA_ZIP=$GHIDRA_ZIP
+          GHIDRA_SHA256=$GHIDRA_SHA256
+          BUILD_OS=ubuntu-24.04
+          BUILD_NODE=$(node --version)
+          EOF
+
+          (
+            cd "$BUNDLE"
+            sha256sum \
+              evidence/rea-help.txt \
+              evidence/rea-version.txt \
+              evidence/rea-package.sha256 \
+              evidence/rea-providers.json \
+              evidence/rea-capabilities.json \
+              evidence/rea-doctor.json \
+              evidence/rea-doctor-ghidra.json \
+              "$GHIDRA_ZIP" \
+              > SHA256SUMS
+          )
+
+      - name: Pack REA prefix for transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/m0-bundle"
+          tar --zstd -cf "$BUNDLE/rea-prefix-linux-x64.tar.zst" -C "$BUNDLE" rea
+          rm -rf "$BUNDLE/rea"
+          (cd "$BUNDLE" && sha256sum rea-prefix-linux-x64.tar.zst >> SHA256SUMS)
+          ls -lh "$BUNDLE" "$BUNDLE/evidence"
+
+      - name: Upload verified offline bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gow3-m0-offline-tools-linux-x64
+          path: ${{ runner.temp }}/m0-bundle/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
