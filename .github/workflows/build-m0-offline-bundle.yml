@@ -39,8 +39,15 @@ jobs:
           node --version
           npm install --global npm@11.16.0
           npm --version
-          java -version
-          javac -version
+          JAVA21_JAVAC="$(update-alternatives --list javac | grep '/java-21-openjdk-' | head -n1)"
+          test -n "$JAVA21_JAVAC"
+          JAVA21_HOME="$(dirname "$(dirname "$(readlink -f "$JAVA21_JAVAC")")")"
+          test -x "$JAVA21_HOME/bin/java"
+          test -x "$JAVA21_HOME/bin/javac"
+          echo "JAVA_HOME=$JAVA21_HOME" >> "$GITHUB_ENV"
+          echo "$JAVA21_HOME/bin" >> "$GITHUB_PATH"
+          "$JAVA21_HOME/bin/java" -version
+          "$JAVA21_HOME/bin/javac" -version
 
       - name: Build exact REA release source
         shell: bash
@@ -94,7 +101,9 @@ jobs:
           BUNDLE="$RUNNER_TEMP/m0-bundle"
           export PATH="$BUNDLE/rea/bin:$PATH"
           export GHIDRA_INSTALL_DIR="$RUNNER_TEMP/m0-ghidra/ghidra_12.1.4_PUBLIC"
-          export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+          test -n "${JAVA_HOME:-}"
+          test -x "$JAVA_HOME/bin/java"
+          test -x "$JAVA_HOME/bin/javac"
 
           node --version | tee "$BUNDLE/evidence/node-version.txt"
           npm --version | tee "$BUNDLE/evidence/npm-version.txt"
@@ -103,7 +112,13 @@ jobs:
 
           rea providers --json | tee "$BUNDLE/evidence/rea-providers.json"
           rea capabilities --json | tee "$BUNDLE/evidence/rea-capabilities.json"
-          rea doctor --json | tee "$BUNDLE/evidence/rea-doctor.json"
+
+          set +e
+          rea doctor --json > "$BUNDLE/evidence/rea-doctor.json"
+          doctor_wide_rc=$?
+          set -e
+          printf '%s\n' "$doctor_wide_rc" > "$BUNDLE/evidence/rea-doctor-exit-code.txt"
+
           rea doctor --provider ghidra --json | tee "$BUNDLE/evidence/rea-doctor-ghidra.json"
 
           cat > "$BUNDLE/provenance.txt" <<EOF
@@ -126,6 +141,7 @@ jobs:
               evidence/rea-providers.json \
               evidence/rea-capabilities.json \
               evidence/rea-doctor.json \
+              evidence/rea-doctor-exit-code.txt \
               evidence/rea-doctor-ghidra.json \
               "$GHIDRA_ZIP" \
               > SHA256SUMS
